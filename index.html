@@ -163,7 +163,7 @@
   // ---------- canvas ----------
   const cv = document.getElementById("c");
   const ctx = cv.getContext("2d");
-  let W = 0, H = 0, DPR = 1, FOCAL = 600, SIZEF = 1;
+  let W = 0, H = 0, DPR = 1, FOCAL = 600, SIZEF = 1, MOBILE = false;
   function resize(){
     DPR = Math.min(window.devicePixelRatio || 1, 2);
     W = innerWidth; H = innerHeight;
@@ -171,6 +171,8 @@
     ctx.setTransform(DPR,0,0,DPR,0,0);
     FOCAL = Math.max(W, H) * 0.75;
     SIZEF = Math.max(0.8, Math.min(2, Math.min(W, H) / 420)) * (H / FOCAL / 1.33);
+    MOBILE = W < 600;
+    if (MOBILE) SIZEF *= 1.15; // a bit larger text on phones
   }
   addEventListener("resize", resize); resize();
 
@@ -284,7 +286,7 @@
     return { x: (W/2) * z / FOCAL, y: (H/2) * z / FOCAL };
   }
   // screen-space box of a text item (no camera tilt) used to keep phrases apart
-  const GAP_X = 8, GAP_Y = 3; // padding between phrases, px
+  const GAP_X = 22, GAP_Y = 16; // space between phrases (sideways) and between lines // padding between phrases, px
   function boxOf(p){
     const spr = textSprites[p.sp]; if (!spr) return null;
     const k = FOCAL / p.z * p.scale;
@@ -304,7 +306,7 @@
   function spawnText(initial){
     let best = null;
     for (let tries = 0; tries < 40; tries++){
-      const z = rand(600, ZMAX);
+      const z = MOBILE ? rand(650, 1300) : rand(600, ZMAX); // phones: keep phrases in a readable depth range
       const s = spanAt(z);
       const p = {
         kind: "text",
@@ -312,7 +314,7 @@
         x: rand(-s.x*1.5, s.x*1.1),
         y: initial ? rand(-s.y*1.3, s.y*1.3) : -s.y*1.2 - rand(0, s.y*0.5),
         z,
-        vy: rand(68, 78),          // near-equal screen speed keeps the spacing while falling
+        vy: 72,                    // identical screen speed keeps the spacing while falling
         scale: rand(0.32, 0.4) * SIZEF,
         wob: rand(0, Math.PI*2),
       };
@@ -324,7 +326,46 @@
     best.y = spanAt(best.z).y * 2;
     return best;
   }
+  // photos: keep each one clear of the others
+  const PHOTO_GAP = 16;
+  function photoBox(p){
+    const w = 200 * 900 / p.z * p.scale, h = w * 4/3;
+    const cx = W/2 + p.x * FOCAL / p.z, cy = H/2 + p.y * FOCAL / p.z;
+    return { x0: cx - w/2 - PHOTO_GAP, x1: cx + w/2 + PHOTO_GAP, y0: cy - h/2 - PHOTO_GAP, y1: cy + h/2 + PHOTO_GAP };
+  }
+  function photoOverlaps(b, self){
+    for (const q of items){
+      if (!q || q === self || q.kind !== "photo" || q.dead) continue;
+      const c = photoBox(q);
+      if (b.x0 < c.x1 && b.x1 > c.x0 && b.y0 < c.y1 && b.y1 > c.y0) return true;
+    }
+    return false;
+  }
+  function photoCount(){
+    return Math.max(2, Math.min(PHOTO_COUNT, photoSprites.length, Math.round(W * H / 110000)));
+  }
+  function spawnPhoto(initial){
+    let p;
+    for (let tries = 0; tries < 40; tries++){
+      const z = rand(900, 1200), scale = rand(0.98, 1.0);
+      const w = 200 * 900 / z * scale;            // on-screen width
+      const half = Math.max(0, W/2 - w/2 - 8);    // keep the whole photo on screen sideways
+      const s = spanAt(z);
+      p = {
+        kind: "photo", sp: freePhotoIndex(), z, scale,
+        x: rand(-half, half) * z / FOCAL,
+        y: initial ? rand(-s.y*1.2, s.y*1.2) : -s.y*1.3 - rand(0, s.y*0.6),
+        vy: 70,                                   // same speed for all photos so gaps stay
+        wob: rand(0, Math.PI*2), rot: rand(-0.25, 0.25),
+      };
+      if (!photoOverlaps(photoBox(p), null)) return p;
+    }
+    p.dead = true; p.y = spanAt(p.z).y * 3; // no room yet: wait off-screen
+    return p;
+  }
+
   function spawnDeco(initial, kind){
+    if (kind === "photo") return spawnPhoto(initial);
     const z = kind === "heart" ? rand(ZMIN, ZMAX*0.5) : kind === "photo" ? rand(900, 1200) : rand(ZMIN*2, ZMAX);
     const s = spanAt(z);
     return {
@@ -345,7 +386,7 @@
     const nh = Math.round(density*0.08), nr = Math.round(density*0.35);
     for (let i=0;i<nh;i++) items.push(spawnDeco(true,"heart"));
     for (let i=0;i<nr;i++) items.push(spawnDeco(true,"rose"));
-    if (photoSprites.length) for (let i=0;i<Math.min(PHOTO_COUNT, photoSprites.length);i++) items.push(spawnDeco(true,"photo"));
+    if (photoSprites.length) for (let i=0;i<photoCount();i++) items.push(spawnPhoto(true));
     stars = [];
     for (let i=0;i<220;i++) stars.push({
       x: rand(-1,1), y: rand(-1,1), z: rand(0.2,1), tw: rand(0,Math.PI*2)
@@ -415,7 +456,7 @@
     // update & sort far → near
     for (let i=0;i<items.length;i++){
       const p = items[i];
-      if (p.dead){ if (Math.random() < 0.2){ items[i] = spawnText(false); } continue; }
+      if (p.dead){ if (Math.random() < 0.2){ items[i] = p.kind === "photo" ? spawnPhoto(false) : spawnText(false); } continue; }
       p.y += p.vy * speed * dt * (p.z/900);   // world speed scaled so near & far feel similar on screen
       p.wob += dt*0.8;
       const s = spanAt(p.z);
